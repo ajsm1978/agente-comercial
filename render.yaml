@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: agente-comercial
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-5-mini
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_PATH
+        value: /var/data/data.db
+    disk:
+      name: agente-data
+      mountPath: /var/data
+      sizeGB: 1
