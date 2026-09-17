@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Editar empresa - Agente Comercial</title>
+<style>body{font-family:Arial,sans-serif;max-width:700px;margin:20px auto;padding:0 16px}input,textarea{display:block;width:100%;box-sizing:border-box;margin:8px 0 14px;padding:10px;font-size:16px}textarea{min-height:110px}button{padding:11px 18px;font-size:16px}a{margin-left:12px}</style>
+</head>
+<body>
+<h1>Editar empresa</h1>
+<form method="POST" action="/admin/company/{{company.id}}/edit">
+<label>Empresa</label><input name="name" value="{{company.name}}" required>
+<label>Slug</label><input name="slug" value="{{company.slug}}" required>
+<label>Nome do agente</label><input name="agent_name" value="{{company.agent_name}}">
+<label>Apresentação</label><textarea name="presentation">{{company.presentation}}</textarea>
+<label>Descrição</label><textarea name="description">{{company.description}}</textarea>
+<label>Instagram</label><input name="instagram" value="{{company.instagram}}">
+<label>WhatsApp</label><input name="whatsapp" value="{{company.whatsapp}}">
+<label>Telefone</label><input name="phone" value="{{company.phone}}">
+<label>E-mail</label><input name="email" value="{{company.email}}">
+<button type="submit">Salvar alterações</button><a href="/admin">Cancelar</a>
+</form>
+</body></html>
