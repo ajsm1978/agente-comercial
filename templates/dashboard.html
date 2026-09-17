@@ -1,35 +1,30 @@
 <!doctype html>
 <html lang="pt-BR">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Painel - Agente Comercial</title>
+<style>body{font-family:Arial,sans-serif;max-width:900px;margin:20px auto;padding:0 16px}input,textarea{display:block;width:100%;box-sizing:border-box;margin:8px 0 14px;padding:10px;font-size:16px}textarea{min-height:100px}button{padding:10px 16px;font-size:16px}section{border:1px solid #ddd;padding:16px;margin:16px 0;border-radius:8px}a{margin-right:12px}</style>
 </head>
 <body>
 <h1>Agente Comercial</h1>
 <p><a href="/admin/logout">Sair</a></p>
 <h2>Nova empresa</h2>
 <form method="POST" action="/admin/company">
-<input name="name" placeholder="Empresa" required>
-<input name="slug" placeholder="slug" required>
-<input name="agent_name" placeholder="Nome do agente">
-<textarea name="presentation" placeholder="Apresentação"></textarea>
-<textarea name="description" placeholder="Descrição"></textarea>
-<input name="instagram" placeholder="Instagram">
-<input name="whatsapp" placeholder="WhatsApp">
-<input name="phone" placeholder="Telefone">
-<input name="email" placeholder="E-mail">
+<input name="name" placeholder="Empresa" required><input name="slug" placeholder="slug" required>
+<input name="agent_name" placeholder="Nome do agente"><textarea name="presentation" placeholder="Apresentação"></textarea><textarea name="description" placeholder="Descrição"></textarea>
+<input name="instagram" placeholder="Instagram"><input name="whatsapp" placeholder="WhatsApp"><input name="phone" placeholder="Telefone"><input name="email" placeholder="E-mail">
 <button type="submit">Criar empresa</button>
 </form>
 <h2>Empresas</h2>
 {% for c in companies %}
-<hr>
+<section>
 <h3>{{c.name}}</h3>
-<p>Chat: <a href="/c/{{c.slug}}">/c/{{c.slug}}</a></p>
+<p><strong>Slug:</strong> {{c.slug}}</p>
+<p><a href="/c/{{c.slug}}" target="_blank">Abrir chat</a><a href="/admin/company/{{c.id}}/edit">✏️ Editar empresa</a></p>
 <form method="POST" enctype="multipart/form-data" action="/admin/company/{{c.id}}/knowledge">
-<input type="file" name="file" accept=".txt,.md,.csv">
-<button type="submit">Adicionar conhecimento</button>
+<input type="file" name="file" accept=".txt,.md,.csv"><button type="submit">Adicionar conhecimento</button>
 </form>
+</section>
 {% else %}
 <p>Nenhuma empresa cadastrada ainda.</p>
 {% endfor %}
