@@ -1,5 +1,5 @@
 import os,sqlite3
-from flask import Flask,request,redirect,url_for,session,render_template,jsonify
+from flask import Flask,request,redirect,session,render_template,jsonify
 from openai import OpenAI
 
 app=Flask(__name__)
@@ -54,20 +54,35 @@ def admin():
 @app.route('/admin/company',methods=['GET','POST'])
 def company():
     if not auth(): return redirect('/admin/login')
-    if request.method=='GET':
-        return redirect('/admin')
+    if request.method=='GET': return redirect('/admin')
     f=request.form
     s=f.get('slug','').strip().lower().replace(' ','-')
-    if not s or not f.get('name','').strip():
-        return 'Nome e slug são obrigatórios.',400
+    if not s or not f.get('name','').strip(): return 'Nome e slug são obrigatórios.',400
     c=con()
     try:
         c.execute('insert into companies(slug,name,agent_name,presentation,description,instagram,whatsapp,phone,email) values(?,?,?,?,?,?,?,?,?)',(s,f.get('name'),f.get('agent_name') or 'Assistente',f.get('presentation',''),f.get('description',''),f.get('instagram',''),f.get('whatsapp',''),f.get('phone',''),f.get('email','')))
         c.commit()
     except sqlite3.IntegrityError:
-        c.close()
-        return 'Este slug já está sendo usado. Escolha outro.',400
+        c.close();return 'Este slug já está sendo usado. Escolha outro.',400
     c.close();return redirect('/admin')
+
+@app.route('/admin/company/<int:i>/edit',methods=['GET','POST'])
+def edit_company(i):
+    if not auth(): return redirect('/admin/login')
+    c=con();co=c.execute('select * from companies where id=?',(i,)).fetchone()
+    if not co:
+        c.close();return 'Empresa não encontrada',404
+    if request.method=='POST':
+        f=request.form;s=f.get('slug','').strip().lower().replace(' ','-')
+        if not s or not f.get('name','').strip():
+            c.close();return 'Nome e slug são obrigatórios.',400
+        try:
+            c.execute('update companies set slug=?,name=?,agent_name=?,presentation=?,description=?,instagram=?,whatsapp=?,phone=?,email=? where id=?',(s,f.get('name'),f.get('agent_name') or 'Assistente',f.get('presentation',''),f.get('description',''),f.get('instagram',''),f.get('whatsapp',''),f.get('phone',''),f.get('email',''),i))
+            c.commit()
+        except sqlite3.IntegrityError:
+            c.close();return 'Este slug já está sendo usado por outra empresa. Escolha outro.',400
+        c.close();return redirect('/admin')
+    c.close();return render_template('edit_company.html',company=co)
 
 @app.post('/admin/company/<int:i>/knowledge')
 def knowledge(i):
