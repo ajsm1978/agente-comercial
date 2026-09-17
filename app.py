@@ -51,14 +51,23 @@ def admin():
     c=con();rows=c.execute('select * from companies order by id desc').fetchall();c.close()
     return render_template('dashboard.html',companies=rows)
 
-@app.post('/admin/company')
+@app.route('/admin/company',methods=['GET','POST'])
 def company():
     if not auth(): return redirect('/admin/login')
+    if request.method=='GET':
+        return redirect('/admin')
     f=request.form
     s=f.get('slug','').strip().lower().replace(' ','-')
+    if not s or not f.get('name','').strip():
+        return 'Nome e slug são obrigatórios.',400
     c=con()
-    c.execute('insert into companies(slug,name,agent_name,presentation,description,instagram,whatsapp,phone,email) values(?,?,?,?,?,?,?,?,?)',(s,f.get('name'),f.get('agent_name') or 'Assistente',f.get('presentation',''),f.get('description',''),f.get('instagram',''),f.get('whatsapp',''),f.get('phone',''),f.get('email','')))
-    c.commit();c.close();return redirect('/admin')
+    try:
+        c.execute('insert into companies(slug,name,agent_name,presentation,description,instagram,whatsapp,phone,email) values(?,?,?,?,?,?,?,?,?)',(s,f.get('name'),f.get('agent_name') or 'Assistente',f.get('presentation',''),f.get('description',''),f.get('instagram',''),f.get('whatsapp',''),f.get('phone',''),f.get('email','')))
+        c.commit()
+    except sqlite3.IntegrityError:
+        c.close()
+        return 'Este slug já está sendo usado. Escolha outro.',400
+    c.close();return redirect('/admin')
 
 @app.post('/admin/company/<int:i>/knowledge')
 def knowledge(i):
