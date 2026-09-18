@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from flask import Flask, request, redirect, session, render_template, jsonify
 from openai import OpenAI
 
@@ -10,6 +11,24 @@ DATABASE_URL = os.getenv('DATABASE_URL', '').strip()
 if DATABASE_URL:
     import psycopg
     from psycopg.rows import dict_row
+
+
+def normalize_database_url(url):
+    """Make common Supabase/Render database URL variants psycopg-compatible."""
+    if not url:
+        return url
+    try:
+        parts = urlsplit(url)
+        query = parse_qsl(parts.query, keep_blank_values=True)
+        normalized = []
+        for key, value in query:
+            if key == 'database':
+                key = 'dbname'
+            normalized.append((key, value))
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(normalized), parts.fragment))
+    except Exception:
+        return url
+
 
 configured_db = os.getenv('DATABASE_PATH', 'data.db')
 if not DATABASE_URL and os.path.dirname(configured_db):
@@ -24,7 +43,7 @@ else:
 
 def con():
     if DATABASE_URL:
-        return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        return psycopg.connect(normalize_database_url(DATABASE_URL), row_factory=dict_row)
     c = sqlite3.connect(DB)
     c.row_factory = sqlite3.Row
     return c
