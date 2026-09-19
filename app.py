@@ -14,17 +14,24 @@ if DATABASE_URL:
 
 
 def normalize_database_url(url):
-    """Make common Supabase/Render database URL variants psycopg-compatible."""
+    """Normalize common Supabase connection-string variants, including
+    accidentally concatenated parameter strings copied from the dashboard."""
     if not url:
         return url
+    url = url.strip()
     try:
+        # Example malformed value seen in Render:
+        # ...@db.PROJECT.supabase.coport=5432database=postgresuser=postgres
+        marker = '.supabase.coport='
+        if marker in url and 'database=' in url and 'user=' in url:
+            prefix, tail = url.split(marker, 1)
+            port, tail = tail.split('database=', 1)
+            database, user = tail.split('user=', 1)
+            if '/' not in database:
+                url = f"{prefix}.supabase.co:{port}/" + database + "?user=" + user
         parts = urlsplit(url)
         query = parse_qsl(parts.query, keep_blank_values=True)
-        normalized = []
-        for key, value in query:
-            if key == 'database':
-                key = 'dbname'
-            normalized.append((key, value))
+        normalized = [('dbname' if k == 'database' else k, v) for k, v in query]
         return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(normalized), parts.fragment))
     except Exception:
         return url
