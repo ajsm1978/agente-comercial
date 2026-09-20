@@ -21,19 +21,32 @@ def normalize_database_url(url):
         return url
     url = url.strip()
     try:
-        marker = '.supabase.coport='
-        if marker in url and 'database=' in url and 'user=' in url:
+        marker = ".supabase.coport="
+        if marker in url:
             prefix, tail = url.split(marker, 1)
-            port, tail = tail.split('database=', 1)
-            database, user = tail.split('user=', 1)
-            if '/' not in database:
-                url = f"{prefix}.supabase.co:{port}/{database}?user={user}"
+            port = "5432"
+            database = "postgres"
+            user = "postgres"
+            if "database=" in tail:
+                port_part, tail = tail.split("database=", 1)
+                if port_part.strip():
+                    port = port_part.strip()
+                if "user=" in tail:
+                    database, user = tail.split("user=", 1)
+                else:
+                    database = tail
+            else:
+                port = tail.strip() or "5432"
+            database = database.strip() or "postgres"
+            user = user.strip() or "postgres"
+            url = f"{prefix}.supabase.co:{port}/{database}?user={user}"
         parts = urlsplit(url)
         query = parse_qsl(parts.query, keep_blank_values=True)
         normalized = [('dbname' if k == 'database' else k, v) for k, v in query]
         return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(normalized), parts.fragment))
     except Exception:
         return url
+
 
 
 configured_db = os.getenv('DATABASE_PATH', 'data.db')
