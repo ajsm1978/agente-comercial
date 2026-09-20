@@ -1,5 +1,4 @@
 import os
-import re
 import sqlite3
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from flask import Flask, request, redirect, session, render_template, jsonify
@@ -17,14 +16,24 @@ DB_READY = False
 
 
 def normalize_database_url(url):
-    """Normalize common Supabase connection-string variants, including the
-    malformed host/port/database/user concatenation observed on Render."""
+    """Normalize common Supabase connection-string variants."""
     if not url:
         return url
     url = url.strip()
     try:
-        malformed = re.match(
-            r'^(?P<prefix>.+\\.supabase\\.co)port=(?P<port>\\d+)database=(?P<database>[^/?#]+?)user=(?P<user>[^/?#]+)
+        marker = '.supabase.coport='
+        if marker in url and 'database=' in url and 'user=' in url:
+            prefix, tail = url.split(marker, 1)
+            port, tail = tail.split('database=', 1)
+            database, user = tail.split('user=', 1)
+            # Keep any password/user prefix already present before the host.
+            url = f"{prefix}.supabase.co:{port}/{database}?user={user}"
+        parts = urlsplit(url)
+        query = parse_qsl(parts.query, keep_blank_values=True)
+        normalized = [('dbname' if k == 'database' else k, v) for k, v in query]
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(normalized), parts.fragment))
+    except Exception:
+        return url
 
 
 configured_db = os.getenv('DATABASE_PATH', 'data.db')
