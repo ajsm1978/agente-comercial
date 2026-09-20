@@ -21,8 +21,6 @@ if USE_POSTGRES:
 
 def db():
     if USE_POSTGRES:
-        # IMPORTANT: v2 accepts only a normal PostgreSQL URI.
-        # It intentionally does not try to repair malformed connection strings.
         return psycopg.connect(DATABASE_URL, row_factory=dict_row)
     conn = sqlite3.connect(SQLITE_PATH)
     conn.row_factory = sqlite3.Row
@@ -38,51 +36,23 @@ def q(conn, sql, params=()):
 def init_db():
     conn = db()
     if USE_POSTGRES:
-        q(conn, """
-            CREATE TABLE IF NOT EXISTS companies (
-                id BIGSERIAL PRIMARY KEY,
-                slug TEXT UNIQUE NOT NULL,
-                name TEXT NOT NULL,
-                agent_name TEXT NOT NULL DEFAULT 'Assistente',
-                presentation TEXT DEFAULT '',
-                description TEXT DEFAULT '',
-                instagram TEXT DEFAULT '',
-                whatsapp TEXT DEFAULT '',
-                phone TEXT DEFAULT '',
-                email TEXT DEFAULT ''
-            )
-        """)
-        q(conn, """
-            CREATE TABLE IF NOT EXISTS knowledge (
-                id BIGSERIAL PRIMARY KEY,
-                company_id BIGINT REFERENCES companies(id) ON DELETE CASCADE,
-                filename TEXT NOT NULL,
-                content TEXT NOT NULL
-            )
-        """)
+        q(conn, """CREATE TABLE IF NOT EXISTS companies (
+            id BIGSERIAL PRIMARY KEY, slug TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
+            agent_name TEXT NOT NULL DEFAULT 'Assistente', presentation TEXT DEFAULT '',
+            description TEXT DEFAULT '', instagram TEXT DEFAULT '', whatsapp TEXT DEFAULT '',
+            phone TEXT DEFAULT '', email TEXT DEFAULT '')""")
+        q(conn, """CREATE TABLE IF NOT EXISTS knowledge (
+            id BIGSERIAL PRIMARY KEY, company_id BIGINT REFERENCES companies(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL, content TEXT NOT NULL)""")
     else:
-        q(conn, """
-            CREATE TABLE IF NOT EXISTS companies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                slug TEXT UNIQUE NOT NULL,
-                name TEXT NOT NULL,
-                agent_name TEXT NOT NULL DEFAULT 'Assistente',
-                presentation TEXT DEFAULT '',
-                description TEXT DEFAULT '',
-                instagram TEXT DEFAULT '',
-                whatsapp TEXT DEFAULT '',
-                phone TEXT DEFAULT '',
-                email TEXT DEFAULT ''
-            )
-        """)
-        q(conn, """
-            CREATE TABLE IF NOT EXISTS knowledge (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                company_id INTEGER NOT NULL,
-                filename TEXT NOT NULL,
-                content TEXT NOT NULL
-            )
-        """)
+        q(conn, """CREATE TABLE IF NOT EXISTS companies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
+            agent_name TEXT NOT NULL DEFAULT 'Assistente', presentation TEXT DEFAULT '',
+            description TEXT DEFAULT '', instagram TEXT DEFAULT '', whatsapp TEXT DEFAULT '',
+            phone TEXT DEFAULT '', email TEXT DEFAULT '')""")
+        q(conn, """CREATE TABLE IF NOT EXISTS knowledge (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER NOT NULL,
+            filename TEXT NOT NULL, content TEXT NOT NULL)""")
     conn.commit()
     conn.close()
 
@@ -130,8 +100,12 @@ def admin():
     init_db()
     conn = db()
     companies = q(conn, "SELECT * FROM companies ORDER BY id DESC").fetchall()
+    knowledge = {}
+    for c in companies:
+        rows = q(conn, "SELECT id,filename FROM knowledge WHERE company_id=? ORDER BY id DESC", (c["id"],)).fetchall()
+        knowledge[c["id"]] = rows
     conn.close()
-    return render_template("dashboard.html", companies=companies, use_postgres=USE_POSTGRES)
+    return render_template("dashboard.html", companies=companies, knowledge=knowledge, use_postgres=USE_POSTGRES)
 
 
 @app.post("/admin/company")
@@ -209,17 +183,35 @@ def add_knowledge(company_id):
     if not require_admin():
         return redirect("/admin/login")
     init_db()
-    upload = request.files.get("file")
-    if not upload or not upload.filename:
-        return "Selecione um arquivo.", 400
-    content = upload.read().decode("utf-8", "replace")
+    uploads = [u for u in request.files.getlist("files") if u and u.filename]
+    if not uploads:
+        return "Selecione pelo menos um arquivo.", 400
+    allowed = {".txt", ".md", ".csv"}
     conn = db()
     exists = q(conn, "SELECT id FROM companies WHERE id=?", (company_id,)).fetchone()
     if not exists:
         conn.close()
         return "Empresa não encontrada.", 404
-    q(conn, "INSERT INTO knowledge(company_id,filename,content) VALUES(?,?,?)",
-      (company_id, upload.filename, content))
+    for upload in uploads:
+        ext = os.path.splitext(upload.filename)[1].lower()
+        if ext not in allowed:
+            conn.close()
+            return f"Formato não permitido: {upload.filename}. Use .txt, .md ou .csv.", 400
+        content = upload.read().decode("utf-8", "replace")
+        q(conn, "INSERT INTO knowledge(company_id,filename,content) VALUES(?,?,?)",
+          (company_id, upload.filename, content))
+    conn.commit()
+    conn.close()
+    return redirect("/admin")
+
+
+@app.post("/admin/company/<int:company_id>/knowledge/<int:knowledge_id>/delete")
+def delete_knowledge(company_id, knowledge_id):
+    if not require_admin():
+        return redirect("/admin/login")
+    init_db()
+    conn = db()
+    q(conn, "DELETE FROM knowledge WHERE id=? AND company_id=?", (knowledge_id, company_id))
     conn.commit()
     conn.close()
     return redirect("/admin")
@@ -256,14 +248,10 @@ def api_chat(slug):
         return jsonify(reply="O atendimento por IA ainda não está configurado. Entre em contato com a equipe da empresa.")
 
     context = [
-        f"Empresa: {company['name']}",
-        f"Agente: {company['agent_name']}",
-        f"Apresentação: {company['presentation']}",
-        f"Descrição: {company['description']}",
-        f"Instagram: {company['instagram']}",
-        f"WhatsApp: {company['whatsapp']}",
-        f"Telefone: {company['phone']}",
-        f"E-mail: {company['email']}",
+        f"Empresa: {company['name']}", f"Agente: {company['agent_name']}",
+        f"Apresentação: {company['presentation']}", f"Descrição: {company['description']}",
+        f"Instagram: {company['instagram']}", f"WhatsApp: {company['whatsapp']}",
+        f"Telefone: {company['phone']}", f"E-mail: {company['email']}",
     ]
     context += [f"Arquivo {d['filename']}: {d['content']}" for d in docs]
 
@@ -279,10 +267,7 @@ CONTEXTO:
     try:
         response = OpenAI(api_key=api_key).chat.completions.create(
             model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": message},
-            ],
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": message}],
         )
         answer = response.choices[0].message.content or "Não consegui responder agora."
     except Exception:
