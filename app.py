@@ -12,23 +12,22 @@ if DATABASE_URL:
     import psycopg
     from psycopg.rows import dict_row
 
+DB_READY = False
+
 
 def normalize_database_url(url):
-    """Normalize common Supabase connection-string variants, including
-    accidentally concatenated parameter strings copied from the dashboard."""
+    """Normalize common Supabase connection-string variants."""
     if not url:
         return url
     url = url.strip()
     try:
-        # Example malformed value seen in Render:
-        # ...@db.PROJECT.supabase.coport=5432database=postgresuser=postgres
         marker = '.supabase.coport='
         if marker in url and 'database=' in url and 'user=' in url:
             prefix, tail = url.split(marker, 1)
             port, tail = tail.split('database=', 1)
             database, user = tail.split('user=', 1)
             if '/' not in database:
-                url = f"{prefix}.supabase.co:{port}/" + database + "?user=" + user
+                url = f"{prefix}.supabase.co:{port}/{database}?user={user}"
         parts = urlsplit(url)
         query = parse_qsl(parts.query, keep_blank_values=True)
         normalized = [('dbname' if k == 'database' else k, v) for k, v in query]
@@ -48,7 +47,7 @@ else:
     DB = configured_db
 
 
-def con():
+def raw_con():
     if DATABASE_URL:
         return psycopg.connect(normalize_database_url(DATABASE_URL), row_factory=dict_row)
     c = sqlite3.connect(DB)
@@ -63,7 +62,10 @@ def execute(c, sql, params=()):
 
 
 def init():
-    c = con()
+    global DB_READY
+    if DB_READY:
+        return
+    c = raw_con()
     if DATABASE_URL:
         execute(c, '''CREATE TABLE IF NOT EXISTS companies(
             id BIGSERIAL PRIMARY KEY, slug TEXT UNIQUE, name TEXT, agent_name TEXT,
@@ -77,10 +79,21 @@ def init():
         execute(c, 'CREATE TABLE IF NOT EXISTS knowledge(id INTEGER PRIMARY KEY,company_id INTEGER,filename TEXT,content TEXT)')
     c.commit()
     c.close()
+    DB_READY = True
+
+
+def con():
+    init()
+    return raw_con()
 
 
 def auth():
     return session.get('admin')
+
+
+@app.route('/healthz')
+def healthz():
+    return jsonify(ok=True)
 
 
 @app.route('/admin/login', methods=['GET', 'POST'])
@@ -220,6 +233,5 @@ def chat(slug):
     return jsonify(reply=ans)
 
 
-init()
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', '10000')))
