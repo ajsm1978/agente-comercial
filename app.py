@@ -21,25 +21,31 @@ def normalize_database_url(url):
         return url
     url = url.strip()
     try:
+        # Supabase/Render may occasionally concatenate connection fields.
+        # Example:
+        # ...@db.example.supabase.coport=5432database=postgresuser=postgres
         marker = ".supabase.coport="
         if marker in url:
             prefix, tail = url.split(marker, 1)
-            port = "5432"
-            database = "postgres"
-            user = "postgres"
             if "database=" in tail:
-                port_part, tail = tail.split("database=", 1)
-                if port_part.strip():
-                    port = port_part.strip()
-                if "user=" in tail:
-                    database, user = tail.split("user=", 1)
-                else:
-                    database = tail
+                port, tail = tail.split("database=", 1)
             else:
-                port = tail.strip() or "5432"
+                port, tail = tail, ""
+            if "user=" in tail:
+                database, user = tail.split("user=", 1)
+            else:
+                database, user = tail, "postgres"
+            port = port.strip() or "5432"
             database = database.strip() or "postgres"
             user = user.strip() or "postgres"
-            url = f"{prefix}.supabase.co:{port}/{database}?user={user}"
+            return f"{prefix}.supabase.co:{port}/{database}?user={user}"
+
+        # Also repair the equivalent form if a scheme/host is otherwise intact.
+        if ".supabase.coport" in url:
+            url = url.replace(".supabase.coport", ".supabase.co:")
+            url = url.replace("database=", "/", 1)
+            url = url.replace("user=", "?user=", 1)
+
         parts = urlsplit(url)
         query = parse_qsl(parts.query, keep_blank_values=True)
         normalized = [('dbname' if k == 'database' else k, v) for k, v in query]
