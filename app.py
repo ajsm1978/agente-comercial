@@ -1,256 +1,296 @@
 import os
 import sqlite3
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from flask import Flask, request, redirect, session, render_template, jsonify
+from urllib.parse import urlsplit
+
+from flask import Flask, jsonify, redirect, render_template, request, session
 from openai import OpenAI
 
 app = Flask(__name__)
-app.secret_key = os.getenv('SECRET_KEY', 'dev')
-DATABASE_URL = os.getenv('DATABASE_URL', '').strip()
+app.secret_key = os.getenv("SECRET_KEY", "change-me-in-render")
 
-if DATABASE_URL:
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+SQLITE_PATH = os.getenv("SQLITE_PATH", "/tmp/agente_comercial_v2.db")
+
+USE_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+if USE_POSTGRES:
     import psycopg
     from psycopg.rows import dict_row
 
-DB_READY = False
+
+def db():
+    if USE_POSTGRES:
+        # IMPORTANT: v2 accepts only a normal PostgreSQL URI.
+        # It intentionally does not try to repair malformed connection strings.
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    conn = sqlite3.connect(SQLITE_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-def normalize_database_url(url):
-    """Normalize common Supabase connection-string variants."""
-    if not url:
-        return url
-    url = url.strip()
-    try:
-        # Supabase/Render may occasionally concatenate connection fields.
-        # Example:
-        # ...@db.example.supabase.coport=5432database=postgresuser=postgres
-        marker = ".supabase.coport="
-        if marker in url:
-            prefix, tail = url.split(marker, 1)
-            if "database=" in tail:
-                port, tail = tail.split("database=", 1)
-            else:
-                port, tail = tail, ""
-            if "user=" in tail:
-                database, user = tail.split("user=", 1)
-            else:
-                database, user = tail, "postgres"
-            port = port.strip() or "5432"
-            database = database.strip() or "postgres"
-            user = user.strip() or "postgres"
-            return f"{prefix}.supabase.co:{port}/{database}?user={user}"
-
-        # Also repair the equivalent form if a scheme/host is otherwise intact.
-        if ".supabase.coport" in url:
-            url = url.replace(".supabase.coport", ".supabase.co:")
-            url = url.replace("database=", "/", 1)
-            url = url.replace("user=", "?user=", 1)
-
-        parts = urlsplit(url)
-        query = parse_qsl(parts.query, keep_blank_values=True)
-        normalized = [('dbname' if k == 'database' else k, v) for k, v in query]
-        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(normalized), parts.fragment))
-    except Exception:
-        return url
+def q(conn, sql, params=()):
+    if USE_POSTGRES:
+        sql = sql.replace("?", "%s")
+    return conn.execute(sql, params)
 
 
-
-configured_db = os.getenv('DATABASE_PATH', 'data.db')
-if not DATABASE_URL and os.path.dirname(configured_db):
-    try:
-        os.makedirs(os.path.dirname(configured_db), exist_ok=True)
-        DB = configured_db
-    except OSError:
-        DB = 'data.db'
-else:
-    DB = configured_db
-
-
-def raw_con():
-    if DATABASE_URL:
-        return psycopg.connect(normalize_database_url(DATABASE_URL), row_factory=dict_row)
-    c = sqlite3.connect(DB)
-    c.row_factory = sqlite3.Row
-    return c
-
-
-def execute(c, sql, params=()):
-    if DATABASE_URL:
-        sql = sql.replace('?', '%s')
-    return c.execute(sql, params)
-
-
-def init():
-    global DB_READY
-    if DB_READY:
-        return
-    c = raw_con()
-    if DATABASE_URL:
-        execute(c, '''CREATE TABLE IF NOT EXISTS companies(
-            id BIGSERIAL PRIMARY KEY, slug TEXT UNIQUE, name TEXT, agent_name TEXT,
-            presentation TEXT, description TEXT, instagram TEXT, whatsapp TEXT,
-            phone TEXT, email TEXT)''')
-        execute(c, '''CREATE TABLE IF NOT EXISTS knowledge(
-            id BIGSERIAL PRIMARY KEY, company_id BIGINT REFERENCES companies(id) ON DELETE CASCADE,
-            filename TEXT, content TEXT)''')
+def init_db():
+    conn = db()
+    if USE_POSTGRES:
+        q(conn, """
+            CREATE TABLE IF NOT EXISTS companies (
+                id BIGSERIAL PRIMARY KEY,
+                slug TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                agent_name TEXT NOT NULL DEFAULT 'Assistente',
+                presentation TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                instagram TEXT DEFAULT '',
+                whatsapp TEXT DEFAULT '',
+                phone TEXT DEFAULT '',
+                email TEXT DEFAULT ''
+            )
+        """)
+        q(conn, """
+            CREATE TABLE IF NOT EXISTS knowledge (
+                id BIGSERIAL PRIMARY KEY,
+                company_id BIGINT REFERENCES companies(id) ON DELETE CASCADE,
+                filename TEXT NOT NULL,
+                content TEXT NOT NULL
+            )
+        """)
     else:
-        execute(c, 'CREATE TABLE IF NOT EXISTS companies(id INTEGER PRIMARY KEY,slug TEXT UNIQUE,name TEXT,agent_name TEXT,presentation TEXT,description TEXT,instagram TEXT,whatsapp TEXT,phone TEXT,email TEXT)')
-        execute(c, 'CREATE TABLE IF NOT EXISTS knowledge(id INTEGER PRIMARY KEY,company_id INTEGER,filename TEXT,content TEXT)')
-    c.commit()
-    c.close()
-    DB_READY = True
+        q(conn, """
+            CREATE TABLE IF NOT EXISTS companies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                agent_name TEXT NOT NULL DEFAULT 'Assistente',
+                presentation TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                instagram TEXT DEFAULT '',
+                whatsapp TEXT DEFAULT '',
+                phone TEXT DEFAULT '',
+                email TEXT DEFAULT ''
+            )
+        """)
+        q(conn, """
+            CREATE TABLE IF NOT EXISTS knowledge (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL,
+                filename TEXT NOT NULL,
+                content TEXT NOT NULL
+            )
+        """)
+    conn.commit()
+    conn.close()
 
 
-def con():
-    init()
-    return raw_con()
+def require_admin():
+    return bool(session.get("admin"))
 
 
-def auth():
-    return session.get('admin')
+@app.errorhandler(Exception)
+def handle_error(error):
+    app.logger.exception("Unhandled application error")
+    return "Erro interno do sistema. O erro foi registrado para correção.", 500
 
 
-@app.route('/healthz')
+@app.get("/healthz")
 def healthz():
-    return jsonify(ok=True)
+    return jsonify(ok=True, database="postgres" if USE_POSTGRES else "sqlite-test")
 
 
-@app.route('/admin/login', methods=['GET', 'POST'])
+@app.get("/")
+def home():
+    return redirect("/admin/login")
+
+
+@app.route("/admin/login", methods=["GET", "POST"])
 def login():
-    if request.method == 'POST':
-        if request.form.get('password') == os.getenv('ADMIN_PASSWORD', 'admin123'):
-            session['admin'] = 1
-            return redirect('/admin')
-        return render_template('login.html', error='Senha inválida')
-    return render_template('login.html')
+    if request.method == "POST":
+        if request.form.get("password") == ADMIN_PASSWORD:
+            session["admin"] = True
+            return redirect("/admin")
+        return render_template("login.html", error="Senha inválida.")
+    return render_template("login.html")
 
 
-@app.get('/admin/logout')
+@app.get("/admin/logout")
 def logout():
     session.clear()
-    return redirect('/admin/login')
+    return redirect("/admin/login")
 
 
-@app.get('/')
-def home():
-    return redirect('/admin/login')
-
-
-@app.get('/admin')
+@app.get("/admin")
 def admin():
-    if not auth():
-        return redirect('/admin/login')
-    c = con()
-    rows = execute(c, 'select * from companies order by id desc').fetchall()
-    c.close()
-    return render_template('dashboard.html', companies=rows)
+    if not require_admin():
+        return redirect("/admin/login")
+    init_db()
+    conn = db()
+    companies = q(conn, "SELECT * FROM companies ORDER BY id DESC").fetchall()
+    conn.close()
+    return render_template("dashboard.html", companies=companies, use_postgres=USE_POSTGRES)
 
 
-@app.route('/admin/company', methods=['GET', 'POST'])
-def company():
-    if not auth():
-        return redirect('/admin/login')
-    if request.method == 'GET':
-        return redirect('/admin')
+@app.post("/admin/company")
+def create_company():
+    if not require_admin():
+        return redirect("/admin/login")
+    init_db()
     f = request.form
-    s = f.get('slug', '').strip().lower().replace(' ', '-')
-    if not s or not f.get('name', '').strip():
-        return 'Nome e slug são obrigatórios.', 400
-    c = con()
+    slug = f.get("slug", "").strip().lower().replace(" ", "-")
+    name = f.get("name", "").strip()
+    if not slug or not name:
+        return "Nome e slug são obrigatórios.", 400
+    conn = db()
     try:
-        execute(c, 'insert into companies(slug,name,agent_name,presentation,description,instagram,whatsapp,phone,email) values(?,?,?,?,?,?,?,?,?)',
-                (s, f.get('name'), f.get('agent_name') or 'Assistente', f.get('presentation', ''), f.get('description', ''), f.get('instagram', ''), f.get('whatsapp', ''), f.get('phone', ''), f.get('email', '')))
-        c.commit()
-    except Exception as e:
-        c.rollback()
-        c.close()
-        if 'unique' in str(e).lower() or 'duplicate' in str(e).lower():
-            return 'Este slug já está sendo usado. Escolha outro.', 400
+        q(conn, """INSERT INTO companies
+            (slug,name,agent_name,presentation,description,instagram,whatsapp,phone,email)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+          (slug, name, f.get("agent_name") or "Assistente",
+           f.get("presentation", ""), f.get("description", ""),
+           f.get("instagram", ""), f.get("whatsapp", ""),
+           f.get("phone", ""), f.get("email", "")))
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+            conn.close()
+            return "Este slug já está sendo usado. Escolha outro.", 400
+        conn.close()
         raise
-    c.close()
-    return redirect('/admin')
+    conn.close()
+    return redirect("/admin")
 
 
-@app.route('/admin/company/<int:i>/edit', methods=['GET', 'POST'])
-def edit_company(i):
-    if not auth():
-        return redirect('/admin/login')
-    c = con()
-    co = execute(c, 'select * from companies where id=?', (i,)).fetchone()
-    if not co:
-        c.close()
-        return 'Empresa não encontrada', 404
-    if request.method == 'POST':
+@app.route("/admin/company/<int:company_id>/edit", methods=["GET", "POST"])
+def edit_company(company_id):
+    if not require_admin():
+        return redirect("/admin/login")
+    init_db()
+    conn = db()
+    company = q(conn, "SELECT * FROM companies WHERE id=?", (company_id,)).fetchone()
+    if not company:
+        conn.close()
+        return "Empresa não encontrada.", 404
+    if request.method == "POST":
         f = request.form
-        s = f.get('slug', '').strip().lower().replace(' ', '-')
-        if not s or not f.get('name', '').strip():
-            c.close()
-            return 'Nome e slug são obrigatórios.', 400
+        slug = f.get("slug", "").strip().lower().replace(" ", "-")
+        name = f.get("name", "").strip()
+        if not slug or not name:
+            conn.close()
+            return "Nome e slug são obrigatórios.", 400
         try:
-            execute(c, 'update companies set slug=?,name=?,agent_name=?,presentation=?,description=?,instagram=?,whatsapp=?,phone=?,email=? where id=?',
-                    (s, f.get('name'), f.get('agent_name') or 'Assistente', f.get('presentation', ''), f.get('description', ''), f.get('instagram', ''), f.get('whatsapp', ''), f.get('phone', ''), f.get('email', ''), i))
-            c.commit()
-        except Exception as e:
-            c.rollback()
-            c.close()
-            if 'unique' in str(e).lower() or 'duplicate' in str(e).lower():
-                return 'Este slug já está sendo usado por outra empresa. Escolha outro.', 400
+            q(conn, """UPDATE companies SET
+                slug=?, name=?, agent_name=?, presentation=?, description=?,
+                instagram=?, whatsapp=?, phone=?, email=? WHERE id=?""",
+              (slug, name, f.get("agent_name") or "Assistente",
+               f.get("presentation", ""), f.get("description", ""),
+               f.get("instagram", ""), f.get("whatsapp", ""),
+               f.get("phone", ""), f.get("email", ""), company_id))
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+                conn.close()
+                return "Este slug já está sendo usado por outra empresa.", 400
+            conn.close()
             raise
-        c.close()
-        return redirect('/admin')
-    c.close()
-    return render_template('edit_company.html', company=co)
+        conn.close()
+        return redirect("/admin")
+    conn.close()
+    return render_template("edit_company.html", company=company)
 
 
-@app.post('/admin/company/<int:i>/knowledge')
-def knowledge(i):
-    if not auth():
-        return redirect('/admin/login')
-    x = request.files.get('file')
-    if x:
-        c = con()
-        execute(c, 'insert into knowledge(company_id,filename,content) values(?,?,?)', (i, x.filename, x.read().decode('utf8', 'replace')))
-        c.commit()
-        c.close()
-    return redirect('/admin')
+@app.post("/admin/company/<int:company_id>/knowledge")
+def add_knowledge(company_id):
+    if not require_admin():
+        return redirect("/admin/login")
+    init_db()
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return "Selecione um arquivo.", 400
+    content = upload.read().decode("utf-8", "replace")
+    conn = db()
+    exists = q(conn, "SELECT id FROM companies WHERE id=?", (company_id,)).fetchone()
+    if not exists:
+        conn.close()
+        return "Empresa não encontrada.", 404
+    q(conn, "INSERT INTO knowledge(company_id,filename,content) VALUES(?,?,?)",
+      (company_id, upload.filename, content))
+    conn.commit()
+    conn.close()
+    return redirect("/admin")
 
 
-@app.get('/c/<slug>')
-def public(slug):
-    c = con()
-    co = execute(c, 'select * from companies where slug=?', (slug,)).fetchone()
-    c.close()
-    if not co:
-        return 'Empresa não encontrada', 404
-    return render_template('chat.html', company=co)
+@app.get("/c/<slug>")
+def public_chat(slug):
+    init_db()
+    conn = db()
+    company = q(conn, "SELECT * FROM companies WHERE slug=?", (slug,)).fetchone()
+    conn.close()
+    if not company:
+        return "Empresa não encontrada.", 404
+    return render_template("chat.html", company=company)
 
 
-@app.post('/api/chat/<slug>')
-def chat(slug):
-    c = con()
-    co = execute(c, 'select * from companies where slug=?', (slug,)).fetchone()
-    docs = execute(c, 'select filename,content from knowledge where company_id=?', (co['id'],)).fetchall() if co else []
-    c.close()
-    if not co:
-        return jsonify(error='Empresa não encontrada'), 404
-    m = (request.json or {}).get('message', '').strip()
-    key = os.getenv('OPENAI_API_KEY')
-    if not key:
-        return jsonify(reply='O atendimento por IA ainda não foi configurado. Fale com a equipe da empresa.')
-    ctx = '\n'.join([
-        f"Empresa: {co['name']}", f"Agente: {co['agent_name']}",
-        f"Apresentação: {co['presentation']}", f"Descrição: {co['description']}",
-        f"Instagram: {co['instagram']}", f"WhatsApp: {co['whatsapp']}",
-        f"Telefone: {co['phone']}", f"E-mail: {co['email']}"
-    ] + [f"Arquivo {d['filename']}: {d['content']}" for d in docs])
-    sys = f'Você é {co["agent_name"]}, assistente comercial de {co["name"]}. Responda em português, naturalmente e somente com base no contexto. Nunca invente preços, promoções ou disponibilidade. Para orçamento, encaminhe para a equipe. Para promoções, indique o Instagram. Se for assunto fora da empresa, diga que não possui essa informação e ofereça contato humano.\n{ctx}'
+@app.post("/api/chat/<slug>")
+def api_chat(slug):
+    init_db()
+    conn = db()
+    company = q(conn, "SELECT * FROM companies WHERE slug=?", (slug,)).fetchone()
+    if not company:
+        conn.close()
+        return jsonify(error="Empresa não encontrada."), 404
+    docs = q(conn, "SELECT filename,content FROM knowledge WHERE company_id=?", (company["id"],)).fetchall()
+    conn.close()
+
+    message = (request.json or {}).get("message", "").strip()
+    if not message:
+        return jsonify(reply="Pode me dizer o que você precisa?")
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return jsonify(reply="O atendimento por IA ainda não está configurado. Entre em contato com a equipe da empresa.")
+
+    context = [
+        f"Empresa: {company['name']}",
+        f"Agente: {company['agent_name']}",
+        f"Apresentação: {company['presentation']}",
+        f"Descrição: {company['description']}",
+        f"Instagram: {company['instagram']}",
+        f"WhatsApp: {company['whatsapp']}",
+        f"Telefone: {company['phone']}",
+        f"E-mail: {company['email']}",
+    ]
+    context += [f"Arquivo {d['filename']}: {d['content']}" for d in docs]
+
+    system = f"""Você é {company['agent_name']}, assistente comercial de {company['name']}.
+Responda em português, de forma natural, curta e útil.
+Use somente as informações do contexto abaixo.
+Nunca invente preços, promoções, estoque, horários ou condições.
+Quando pedirem orçamento ou preço, encaminhe para a equipe e indique o Instagram quando houver.
+Se o assunto não tiver relação com a empresa, diga que você não possui essa informação e ofereça contato humano.
+CONTEXTO:
+{chr(10).join(context)}"""
+
     try:
-        r = OpenAI(api_key=key).chat.completions.create(model=os.getenv('OPENAI_MODEL', 'gpt-5-mini'), messages=[{'role': 'system', 'content': sys}, {'role': 'user', 'content': m}])
-        ans = r.choices[0].message.content
+        response = OpenAI(api_key=api_key).chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": message},
+            ],
+        )
+        answer = response.choices[0].message.content or "Não consegui responder agora."
     except Exception:
-        ans = 'Não consegui concluir o atendimento agora. Fale diretamente com a equipe da empresa.'
-    return jsonify(reply=ans)
+        app.logger.exception("OpenAI request failed")
+        answer = "Não consegui concluir o atendimento agora. Fale diretamente com a equipe da empresa."
+    return jsonify(reply=answer)
 
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', '10000')))
+if __name__ == "__main__":
+    init_db()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
