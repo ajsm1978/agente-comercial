@@ -14,6 +14,12 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 SQLITE_PATH = os.getenv("SQLITE_PATH", "/tmp/agente_comercial_v2.db")
 
 USE_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+
+# In Render, never silently fall back to ephemeral SQLite. That would make
+# company data disappear after a restart/deploy.
+if os.getenv("RENDER") and not USE_POSTGRES:
+    raise RuntimeError("DATABASE_URL não configurada: o serviço Render precisa usar PostgreSQL persistente.")
+
 if USE_POSTGRES:
     import psycopg
     from psycopg.rows import dict_row
@@ -69,7 +75,16 @@ def handle_error(error):
 
 @app.get("/healthz")
 def healthz():
-    return jsonify(ok=True, database="postgres" if USE_POSTGRES else "sqlite-test")
+    conn = db()
+    companies_count = q(conn, "SELECT COUNT(*) AS n FROM companies").fetchone()["n"]
+    knowledge_count = q(conn, "SELECT COUNT(*) AS n FROM knowledge").fetchone()["n"]
+    conn.close()
+    return jsonify(
+        ok=True,
+        database="postgres" if USE_POSTGRES else "sqlite-test",
+        companies=companies_count,
+        knowledge=knowledge_count,
+    )
 
 
 @app.get("/")
@@ -277,5 +292,6 @@ CONTEXTO:
 
 
 if __name__ == "__main__":
+    app.logger.info("Database backend: %s", "postgres" if USE_POSTGRES else "sqlite-test")
     init_db()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
